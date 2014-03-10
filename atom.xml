@@ -1,0 +1,424 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title><![CDATA[Tech Strings]]></title>
+  <subtitle><![CDATA[Julia, Javascript, Ruby, Finance, Big Data]]></subtitle>
+  <link href="/atom.xml" rel="self"/>
+  <link href="http://techstrings.com/"/>
+  <updated>2014-03-10T11:39:41.188Z</updated>
+  <id>http://techstrings.com/</id>
+  
+  <author>
+    <name><![CDATA[Christopher Brickley]]></name>
+    
+  </author>
+  
+  <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Introducing jlbox: Realtime Testing with Julia, FactCheck.jl, Gulp.js, and ZMQ]]></title>
+    <link href="http://techstrings.com/2014/02/28/realtime-testing-with-julia-gulpjs-zmq/"/>
+    <id>http://techstrings.com/2014/02/28/realtime-testing-with-julia-gulpjs-zmq/</id>
+    <published>2014-02-28T23:00:00.000Z</published>
+    <updated>2014-03-10T11:39:02.000Z</updated>
+    <content type="html"><![CDATA[<p>When writing ruby code, I always enjoyed having my tests run side-by-side as I wrote code. I used a variety of combinations through the years, starting with the watchr gem, and eventually moving to guard. In <a href="http://julialang.org" target="_blank">julia</a>, the language doesn&#39;t have as many tools available due to the infancy of it&#39;s package ecosystem. However, I combined a few tools to allow me to save my changes and see my test results immediately in a terminal window.<a id="more"></a></p>
+<p>tl;dr:</p>
+<ol>
+<li>install node and zmq</li>
+<li>npm install -g jlbox</li>
+<li>&#39;jlbox init&#39; in your project directory</li>
+</ol>
+<h1 id="dependencies">Dependencies</h1>
+<p>First, you need to install <a href="http://nodejs.org/" target="_blank">node.js</a> and zmq bidings if you don&#39;t have them already. I&#39;m using <a href="http://brew.sh/" target="_blank">homebrew</a> on OS X, so the following command works:</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre>1
+2
+</pre></td><td class="code"><pre>brew <span class="keyword">install</span> node
+brew <span class="keyword">install</span> zmq
+</pre></td></tr></table></figure>
+
+<p>Once node is installed, you will have two new executables: <code>node</code> and <code>npm</code>. From here, you can install the other node packages we need:</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre>1
+2
+3
+</pre></td><td class="code"><pre>npm <span class="keyword">install</span> -g gulp
+npm <span class="keyword">install</span> --save-dev gulp
+npm <span class="keyword">install</span> --save-dev zmq
+</pre></td></tr></table></figure>
+
+<h1 id="julia">Julia</h1>
+<p>I wasn&#39;t a fan of the existing Julia testing framework because I couldn&#39;t easily inspect the expected vs. actual results. <a href="https://github.com/zachallaun/FactCheck.jl" target="_blank">FactCheck.jl</a> nicely provides this functionality. In addition, you can run your tests as a module and reload it when you need to test again. This feature comes in handy as we&#39;ll see later on.</p>
+<p>From your Julia command line, install FactCheck and ZMQ:</p>
+<figure class="highlight julia"><table><tr><td class="gutter"><pre>1
+2
+</pre></td><td class="code"><pre>julia &gt; Pkg<span class="preprocessor">.add</span>(<span class="string">"FactCheck"</span>)<span class="comment">;</span>
+julia &gt; Pkg<span class="preprocessor">.add</span>(<span class="string">"ZMQ"</span>)<span class="comment">;</span>
+</pre></td></tr></table></figure>
+
+<h1 id="julia-zmq-binding">Julia ZMQ Binding</h1>
+<p>We&#39;re now going to setup a simple julia process that will bind to a ZMQ socket and take requests from node.js. When we get a request, we&#39;re going to reload the test/module file(s) and run our test cases.</p>
+<p>Here&#39;s a file to get started; let&#39;s call this file <code>gulp.jl</code>:</p>
+<figure class="highlight julia"><table><tr><td class="gutter"><pre>1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+</pre></td><td class="code"><pre><span class="keyword">using</span> ZMQ
+const ctx = Context()
+const sock = Socket(ctx, REP)
+ZMQ.bind(sock, <span class="string">"tcp://127.0.0.1:7752"</span>)
+
+<span class="keyword">while</span> <span class="constant">true</span>
+   println(<span class="string">"Waiting for input"</span>)
+   msg = ZMQ.recv(sock)
+   reload(bytestring(msg))
+   ZMQ.<span class="built_in">send</span>(sock, <span class="string">"SUCCESS"</span>)
+<span class="function"><span class="keyword">end</span></span>
+</pre></td></tr></table></figure>
+
+<h1 id="gulpfile-js">gulpfile.js</h1>
+<p>Now we need to setup the gulpfile to watch our test cases and code, and run the corresponding test cases where appropriate.</p>
+<p>My project structure looks like this:</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre>1
+2
+3
+4
+</pre></td><td class="code"><pre>src\
+    -<span class="ruby"> example.jl
+</span>test\
+    -<span class="ruby"> example_test.jl</span>
+</pre></td></tr></table></figure>
+
+<p>Given this structure, we want to execute the example_test.jl file any time <code>example.jl</code> or <code>example_test.jl</code> changes.</p>
+<p>The below gulpfile does the following things:</p>
+<ol>
+<li>Starts a julia child process which binds to a ZMQ socket. In the event your code causes Julia to crash, gulp will restart julia for you.</li>
+<li>Uses a node.js ZMQ package to connect to the ZMQ socket setup by the julia child process.</li>
+<li>Watches src/ and test/ directories for file changes.</li>
+<li>When a file change is detected, passes the test file to be re-run over the ZMQ socket to the running julia child process.</li>
+</ol>
+<p>Here&#39;s the gulpfile:</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre>1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+</pre></td><td class="code"><pre><span class="keyword">var</span> gulp      = <span class="built_in">require</span>(<span class="string">'gulp'</span>);
+<span class="keyword">var</span> gutil     = <span class="built_in">require</span>(<span class="string">'gulp-util'</span>);
+<span class="keyword">var</span> zmq       = <span class="built_in">require</span>(<span class="string">'zmq'</span>);
+<span class="keyword">var</span> spawn     = <span class="built_in">require</span>(<span class="string">'child_process'</span>).spawn;
+<span class="keyword">var</span> fs        = <span class="built_in">require</span>(<span class="string">'fs'</span>);
+<span class="keyword">var</span> file_path;
+<span class="keyword">var</span> sock;
+
+<span class="comment">// watch all jl files in tests and scripts dirs</span>
+<span class="keyword">var</span> paths     = {
+  tests: <span class="string">'test/**/*.jl'</span>,
+  scripts: <span class="string">'src/**/*.jl'</span>
+};
+
+<span class="keyword">var</span> setupJuliaProcess = <span class="function"><span class="keyword">function</span><span class="params">()</span> {</span>
+  sock      = zmq.socket(<span class="string">'req'</span>);
+  <span class="keyword">var</span> child = spawn(<span class="string">"julia"</span>, [<span class="string">"--color"</span>, <span class="string">"gulp.jl"</span>], {cwd: process.cwd()});
+
+  <span class="comment">// connect to socket</span>
+  sock.connect(<span class="string">'tcp://127.0.0.1:7752'</span>);
+
+  child.stdout.setEncoding(<span class="string">'utf8'</span>);
+  child.stdout.on(<span class="string">'data'</span>, <span class="function"><span class="keyword">function</span><span class="params">(data)</span> {</span>
+    data = data.trim();
+    <span class="keyword">if</span> (data) {
+      console.log(data);
+    }
+  });
+
+  child.stderr.setEncoding(<span class="string">'utf8'</span>);
+  child.stderr.on(<span class="string">'data'</span>, <span class="function"><span class="keyword">function</span><span class="params">(data)</span> {</span>
+    console.log(data.trim());
+  });
+
+  child.on(<span class="string">'close'</span>, <span class="function"><span class="keyword">function</span><span class="params">(code)</span> {</span>
+    gutil.log(gutil.colors.red(<span class="string">"Julia exited, with exit code: "</span>, code));
+    gutil.log(gutil.colors.green(<span class="string">"Restarting julia..."</span>));
+    setupJuliaProcess();
+  });
+};
+
+<span class="comment">// build child process</span>
+setupJuliaProcess();
+
+gulp.task(<span class="string">'juliaZMQ'</span>, <span class="function"><span class="keyword">function</span><span class="params">()</span>{</span>
+  <span class="comment">// if file name exists, send it across</span>
+  <span class="keyword">if</span> (fs.existsSync(file_path)) {
+    gutil.log(<span class="string">"Sending "</span> + file_path + <span class="string">" to julia"</span>);
+    sock.send(file_path);
+  }
+});
+
+<span class="keyword">var</span> watcher = gulp.watch([paths.tests, paths.scripts], [<span class="string">'juliaZMQ'</span>]);
+<span class="comment">// regex to match any jl files in src dir</span>
+<span class="keyword">var</span> re = <span class="regexp">/(.*\/)src\/(.+)\.jl/</span>;
+
+watcher.on(<span class="string">'change'</span>, <span class="function"><span class="keyword">function</span><span class="params">(event)</span>{</span>
+  <span class="keyword">if</span> (event.type !== <span class="string">'deleted'</span>) {
+    gutil.log(event.path + <span class="string">' '</span> + event.type);
+    <span class="keyword">var</span> match = re.exec(event.path);
+
+    <span class="comment">// if no match, test file has been edited</span>
+    <span class="keyword">if</span> (match === <span class="literal">null</span>) {
+      file_path = event.path;
+    }
+    <span class="comment">// src file has been edited, find the corresponding test file</span>
+    <span class="keyword">else</span> {
+      file_path = match[<span class="number">1</span>]+<span class="string">'test/'</span>+match[<span class="number">2</span>]+<span class="string">'_test.jl'</span>;
+    }
+  }
+  <span class="keyword">else</span> {
+    file_path = <span class="string">""</span>;
+  }
+});
+
+gulp.task(<span class="string">'default'</span>, [<span class="string">'juliaZMQ'</span>]);
+</pre></td></tr></table></figure>
+
+<h1 id="write-julia-code">Write Julia Code</h1>
+<p>Below I&#39;m making a module called <code>Simple</code>. It helpful to use a module so I can easily reload it in the test file.</p>
+<p>In src/simple.jl:</p>
+<figure class="highlight julia"><table><tr><td class="gutter"><pre>1
+2
+3
+4
+5
+</pre></td><td class="code"><pre><span class="class"><span class="keyword">module</span> <span class="title">Simple</span></span>
+  function sum(<span class="symbol">num1:</span><span class="symbol">:Int64</span>, <span class="symbol">num2:</span><span class="symbol">:Int64</span>)
+    <span class="keyword">return</span> num1+num2
+  <span class="keyword">end</span>
+<span class="keyword">end</span>
+</pre></td></tr></table></figure>
+
+<p>For the test file a few things are done:</p>
+<ol>
+<li>We use a module again so it can be easily reloaded.</li>
+<li>We include our source file (also a module) relative to the project root. Gulp is going to start the julia process in the project root, so the path we provide to reload should be relative to that point.</li>
+<li>We use FactCheck to run our tests.</li>
+</ol>
+<p>In test/simple_test.jl:</p>
+<figure class="highlight julia"><table><tr><td class="gutter"><pre>1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+</pre></td><td class="code"><pre><span class="built_in">module</span> SimpleTest
+using FactCheck
+reload(<span class="string">"$(pwd())/src/simple.jl"</span>)
+using Simple
+
+facts(<span class="string">"simple sum"</span>) <span class="keyword">do</span>
+    <span class="property">@fact</span> Simple.sum<span class="function"><span class="params">(<span class="number">1</span>,<span class="number">4</span>)</span> =&gt;</span> <span class="number">5</span>
+    <span class="property">@fact</span> Simple.sum<span class="function"><span class="params">(<span class="number">1</span>,<span class="number">36</span>)</span> =&gt;</span> <span class="number">37</span>
+end
+
+end <span class="comment"># module SumTest</span>
+</pre></td></tr></table></figure>
+
+<h1 id="putting-it-all-together">Putting it All Together</h1>
+<p>Now we have all the pieces we need. From your terminal, run the following commands:</p>
+<ol>
+<li>In terminal, type: <code>gulp</code></li>
+<li>Modify <code>simple_test.jl</code> or <code>simple.jl</code> and save.</li>
+<li>Profit</li>
+</ol>
+<p>You should now see some output in your julia terminal window, with the tests automatically being re-run! Enjoy!</p>
+]]></content>
+    <summary type="html"><![CDATA[<p>When writing ruby code, I always enjoyed having my tests run side-by-side as I wrote code. I used a variety of combinations through the years, starting with the watchr gem, and eventually moving to guard. In <a href="http://julialang.org" target="_blank">julia</a>, the language doesn&#39;t have as many tools available due to the infancy of it&#39;s package ecosystem. However, I combined a few tools to allow me to save my changes and see my test results immediately in a terminal window.]]></summary>
+    
+      <category term="julia" scheme="http://techstrings.com/tags/julia/"/>
+    
+      <category term="javascript" scheme="http://techstrings.com/tags/javascript/"/>
+    
+      <category term="node.js" scheme="http://techstrings.com/tags/node.js/"/>
+    
+      <category term="gulp.js" scheme="http://techstrings.com/tags/gulp.js/"/>
+    
+      <category term="zmq" scheme="http://techstrings.com/tags/zmq/"/>
+    
+      <category term="jlbox" scheme="http://techstrings.com/tags/jlbox/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[Remove 'category' Prefix from WordPress]]></title>
+    <link href="http://techstrings.com/2012/03/04/remove-category-prefix-wordpress/"/>
+    <id>http://techstrings.com/2012/03/04/remove-category-prefix-wordpress/</id>
+    <published>2012-03-04T18:54:00.000Z</published>
+    <updated>2014-02-19T12:55:03.000Z</updated>
+    <content type="html"><![CDATA[<p>One of the most pesky things I find about the WordPress installation is that for category pages, WordPress adds the &#39;category&#39; prefix to URLs. Sure you can live with the behavior (like here on Octopress) but for real-world installs, it looks kind of sloppy and unexpected. I originally came up with this technique in 2007, and after looking at the &quot;new and improved&quot; ways of today, I couldn&#39;t find any better options.<a id="more"></a></p>
+<p>Some options I looked at:</p>
+<ul>
+<li>This WordPress <a href="http://wordpress.org/support/topic/how-to-remove-the-category-in-the-link-" target="_blank">support post</a> by <strong>petervcook </strong>says you can change your category base to <em>./</em> and the category prefix will be removed. While this is correct, it will be removed when WordPress generates the links, your category pages won&#39;t load. I didn&#39;t fully investigate why they weren&#39;t loading, but given that post is over four years old and a lot has changed in core since then (including the rewriting mechanism), I don&#39;t think it&#39;s a good solution.</li>
+<li>Another option I thought of was to handle rewriting of the URLs at the web server layer: internally rewrite your <em>example.com/sports/</em> to <em>example.com/category/sports/</em>. This solution would work, but it breaks down when you want to display actual pages (read: this is a page not a category!) and when you look to support custom post types.</li>
+<li>The most popular &quot;solution&quot; is the Top Level Category Plugin, which has now been reworked for WP 3.1+ into the <a href="http://foliovision.com/seo-tools/wordpress/plugins/fv-top-level-categories" target="_blank">FV Top Level Categories plugin</a>. However, this plugin too messes with how WordPress handles rewrites and if any changes occur, this plugin will most likely break. Additionally, one of the comments points out that when this plugin is enabled, custom post types no longer work (fail!).</li>
+<li>Take the <a href="http://techcrunch.com" target="_blank">TechCrunch</a> approach and destroy and notion of category and go full-steam ahead with tags. Sure you can do this, but then you lose the cool category feel! Even TechCrunch is stuck with the <em>/tag/</em> prefix on all their &quot;category&quot; pages.</li>
+</ul>
+<p>So what&#39;s my answer to this age-old problem? Instead of trying to hack your way through the WordPress rewriting mechanism only to have your code break in some unexpected release when you don&#39;t have time to debug, but need one of the new WordPress features right away, use what WordPress already gives you: pages. You see, pages can display post information too! You just need to tell them how. My technique follows a few basic patterns:</p>
+<ul>
+<li>For each category you have, add a page with the same &#39;slug&#39; as that category</li>
+<li>Write a &#39;page template&#39; that you&#39;ll assign to these pages. The template will handle fetching the posts for the given category. You&#39;ll also want some handling for displaying normal pages, which is pretty simple to do.</li>
+</ul>
+<p>What benefits does this process have?</p>
+<ul>
+<li>No need to keep track of WordPress rewriting internals. You use a widely supported basic feature of WordPress: <strong>pages</strong></li>
+<li>Custom post types are supported.</li>
+</ul>
+<h2 id="show-me-the-code">Show Me the Code</h2>
+<figure class="highlight php"><table><tr><td class="gutter"><pre>1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+</pre></td><td class="code"><pre><span class="preprocessor">&lt;?php</span>
+  <span class="comment">// include this file in your header.php</span>
+
+  <span class="keyword">if</span> (is_page()) {
+    <span class="comment">// $is_category_page - true if page is a 'category' page (displays posts), else false</span>
+    <span class="variable">$is_category_page</span> = <span class="keyword">false</span>;
+
+    <span class="comment">// if the page content is empty, it's a category page</span>
+    <span class="keyword">if</span> (<span class="keyword">empty</span>(<span class="variable">$post</span>-&gt;post_content)) {
+      <span class="variable">$is_category_page</span> = <span class="keyword">true</span>;
+    }
+  }
+<span class="preprocessor">?&gt;</span>
+<span class="preprocessor">&lt;?php</span>
+  <span class="comment">// page.php - use this file as a controller</span>
+  <span class="keyword">include</span> (TEMPLATEPATH .<span class="string">'/header.php'</span>);
+
+  <span class="comment">// if $is_category_page is true, we know our "page", is really a "category"</span>
+  <span class="keyword">if</span> (<span class="variable">$is_category_page</span>)
+    <span class="comment">// template for your categories</span>
+    <span class="keyword">include</span> (TEMPLATEPATH . <span class="string">'/page-category.php'</span>);
+  <span class="keyword">else</span>
+    <span class="comment">// template for your pages</span>
+    <span class="keyword">include</span> (TEMPLATEPATH . <span class="string">'/page-default.php'</span>);
+
+  <span class="comment">// etc..</span>
+  <span class="keyword">include</span> (TEMPLATEPATH . <span class="string">'/sidebar.php'</span>);
+  <span class="keyword">include</span> (TEMPLATEPATH . <span class="string">'/footer.php'</span>);
+<span class="preprocessor">?&gt;</span>
+</pre></td></tr></table></figure>
+
+]]></content>
+    <summary type="html"><![CDATA[<p>One of the most pesky things I find about the WordPress installation is that for category pages, WordPress adds the &#39;category&#39; prefix to URLs. Sure you can live with the behavior (like here on Octopress) but for real-world installs, it looks kind of sloppy and unexpected. I originally came up with this technique in 2007, and after looking at the &quot;new and improved&quot; ways of today, I couldn&#39;t find any better options.]]></summary>
+    
+      <category term="wordpress" scheme="http://techstrings.com/tags/wordpress/"/>
+    
+      <category term="php" scheme="http://techstrings.com/tags/php/"/>
+    
+  </entry>
+  
+</feed>
