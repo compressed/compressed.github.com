@@ -371,11 +371,12 @@ body {
 #subtitle {
   text-decoration: none;
   color: #fff;
-  font-weight: 300;
+  font-weight: 400;
+  font-family: 'Baumans', serif;
   text-shadow: 0 1px 4px rgba(0,0,0,0.3);
 }
 #logo {
-  font-size: 40px;
+  font-size: 88px;
   line-height: 40px;
   letter-spacing: 2px;
 }
@@ -383,6 +384,8 @@ body {
   font-size: 16px;
   line-height: 16px;
   letter-spacing: 1px;
+  font-family: 'Baumans', serif;
+  color: #000;
 }
 #subtitle-wrap {
   margin-top: 16px;
